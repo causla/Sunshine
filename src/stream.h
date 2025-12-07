@@ -16,22 +16,22 @@
 #include "video.h"
 
 namespace stream {
-//  constexpr auto VIDEO_STREAM_PORT = 9;
+  constexpr auto VIDEO_STREAM_PORT = 9;
   constexpr auto CONTROL_PORT = 10;
-//  constexpr auto AUDIO_STREAM_PORT = 11;
+  constexpr auto AUDIO_STREAM_PORT = 11;
 
   struct session_t;
 
   struct config_t {
-//    audio::config_t audio;
-//    video::config_t monitor;
+    audio::config_t audio;
+    video::config_t monitor;
 
     int packetsize;
     int minRequiredFecPackets;
     int mlFeatureFlags;
     int controlProtocolType;
- //   int audioQosType;
- //   int videoQosType;
+    int audioQosType;
+    int videoQosType;
 
     uint32_t encryptionFlagsEnabled;
 
