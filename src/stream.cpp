@@ -1840,6 +1840,7 @@ namespace stream {
     return -1;
   }
 
+  // (potongan file: hanya fungsi videoThread dan audioThread yang diubah)
   void videoThread(session_t *session) {
     auto fg = util::fail_guard([&]() {
       session::stop(*session);
@@ -1847,24 +1848,20 @@ namespace stream {
 
     while_starting_do_nothing(session->state);
 
-    // Early return: disable sending video. This keeps the control stream active only.
-    BOOST_LOG(info) << "Video disabled (control-only mode): not starting video capture/broadcast";
-    return;
+    // Tetap lakukan recv_ping agar kita menerima ping dari klien dan mengikat peer
+    auto ref = broadcast.ref();
+    auto error = recv_ping(session, ref, socket_e::video, session->video.ping_payload, session->video.peer, config::stream.ping_timeout);
+    if (error < 0) {
+      return;
+    }
 
-    // The original code would wait for a ping and then start video capture.
-    // Kept above are the original steps, but returning early prevents any video frames from being sent.
-    // auto ref = broadcast.ref();
-    // auto error = recv_ping(session, ref, socket_e::video, session->video.ping_payload, session->video.peer, config::stream.ping_timeout);
-    // if (error < 0) {
-    //   return;
-    // }
-    //
-    // // Enable local prioritization and QoS tagging on video traffic if requested by the client
-    // auto address = session->video.peer.address();
-    // session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
-    //
-    // BOOST_LOG(debug) << "Start capturing Video"sv;
-    // video::capture(session->mail, session->config.monitor, session);
+    // Enable local prioritization and QoS tagging on video traffic if requested by the client
+    auto address = session->video.peer.address();
+    session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
+
+    // Do NOT start capture/encoding — keep control/UDP session prepared but send no video
+    BOOST_LOG(info) << "Video capture disabled by config: peer is bound and QoS set, not starting video capture/broadcast";
+    return;
   }
 
   void audioThread(session_t *session) {
@@ -1874,26 +1871,21 @@ namespace stream {
 
     while_starting_do_nothing(session->state);
 
-    // Early return: disable sending audio. This keeps the control stream active only.
-    BOOST_LOG(info) << "Audio disabled (control-only mode): not starting audio capture/broadcast";
+    // Tetap lakukan recv_ping agar kita menerima ping dari klien dan mengikat peer
+    auto ref = broadcast.ref();
+    auto error = recv_ping(session, ref, socket_e::audio, session->audio.ping_payload, session->audio.peer, config::stream.ping_timeout);
+    if (error < 0) {
+      return;
+    }
+
+    // Enable local prioritization and QoS tagging on audio traffic if requested by the client
+    auto address = session->audio.peer.address();
+    session->audio.qos = platf::enable_socket_qos(ref->audio_sock.native_handle(), address, session->audio.peer.port(), platf::qos_data_type_e::audio, session->config.audioQosType != 0);
+
+    // Do NOT start capture/encoding — keep control/UDP session prepared but send no audio
+    BOOST_LOG(info) << "Audio capture disabled by config: peer is bound and QoS set, not starting audio capture/broadcast";
     return;
-
-    // The original code would wait for a ping and then start audio capture.
-    // Kept below are the original steps for reference, but returning early prevents any audio from being sent.
-    // auto ref = broadcast.ref();
-    // auto error = recv_ping(session, ref, socket_e::audio, session->audio.ping_payload, session->audio.peer, config::stream.ping_timeout);
-    // if (error < 0) {
-    //   return;
-    // }
-    //
-    // // Enable local prioritization and QoS tagging on audio traffic if requested by the client
-    // auto address = session->audio.peer.address();
-    // session->audio.qos = platf::enable_socket_qos(ref->audio_sock.native_handle(), address, session->audio.peer.port(), platf::qos_data_type_e::audio, session->config.audioQosType != 0);
-    //
-    // BOOST_LOG(debug) << "Start capturing Audio"sv;
-    // audio::capture(session->mail, session->config.audio, session);
   }
-
   namespace session {
     std::atomic_uint running_sessions;
 
