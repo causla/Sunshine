@@ -30,7 +30,6 @@ extern "C" {
 #include "rtsp.h"
 #include "stream.h"
 #include "sync.h"
-#include "video.h"
 
 namespace asio = boost::asio;
 
@@ -110,7 +109,7 @@ namespace rtsp_stream {
 
       if (session->rtsp_cipher) {
         // For encrypted RTSP, we will read the the entire header first
-        boost::asio::async_read(sock, boost::asio::buffer(begin, sizeof(encrypted_rtsp_header_t)), boost::bind(&socket_t::handle_read_encrypted_header, shared_from_this(), boost::asio::placeholders::e[...]
+        boost::asio::async_read(sock, boost::asio::buffer(begin, sizeof(encrypted_rtsp_header_t)), boost::bind(&socket_t::handle_read_encrypted_header, shared_from_this(), boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
       } else {
         sock.async_read_some(
           boost::asio::buffer(begin, (std::size_t) (std::end(msg_buf) - begin)),
@@ -170,7 +169,7 @@ namespace rtsp_stream {
       sock_close.disable();
 
       // Read the remainder of the header and full encrypted payload
-      boost::asio::async_read(socket->sock, boost::asio::buffer(socket->begin + bytes, payload_length), boost::bind(&socket_t::handle_read_encrypted_message, socket->shared_from_this(), boost::asio::p[...]
+      boost::asio::async_read(socket->sock, boost::asio::buffer(socket->begin + bytes, payload_length), boost::bind(&socket_t::handle_read_encrypted_message, socket->shared_from_this(), boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
     }
 
     /**
@@ -757,20 +756,16 @@ namespace rtsp_stream {
     // Tell the client about our supported features
     ss << "a=x-ss-general.featureFlags:" << (uint32_t) platf::get_capabilities() << std::endl;
 
-    // Always request new control stream encryption if the client supports it
-    uint32_t encryption_flags_supported = SS_ENC_CONTROL_V2 | SS_ENC_AUDIO;
+    // Only request control stream encryption (audio/video removed)
+    uint32_t encryption_flags_supported = SS_ENC_CONTROL_V2;
     uint32_t encryption_flags_requested = SS_ENC_CONTROL_V2;
 
     // Determine the encryption desired for this remote endpoint
     auto encryption_mode = net::encryption_mode_for_address(sock.remote_endpoint().address());
     if (encryption_mode != config::ENCRYPTION_MODE_NEVER) {
-      // Advertise support for video encryption if it's not disabled
-      encryption_flags_supported |= SS_ENC_VIDEO;
-
-      // If it's mandatory, also request it to enable use if the client
-      // didn't explicitly opt in, but it otherwise has support.
+      // If it's mandatory, also request control encryption
       if (encryption_mode == config::ENCRYPTION_MODE_MANDATORY) {
-        encryption_flags_requested |= SS_ENC_VIDEO | SS_ENC_AUDIO;
+        encryption_flags_requested |= SS_ENC_CONTROL_V2;
       }
     }
 
@@ -778,50 +773,7 @@ namespace rtsp_stream {
     ss << "a=x-ss-general.encryptionSupported:" << encryption_flags_supported << std::endl;
     ss << "a=x-ss-general.encryptionRequested:" << encryption_flags_requested << std::endl;
 
-    if (video::last_encoder_probe_supported_ref_frames_invalidation) {
-      ss << "a=x-nv-video[0].refPicInvalidation:1"sv << std::endl;
-    }
-
-    if (video::active_hevc_mode != 1) {
-      ss << "sprop-parameter-sets=AAAAAU"sv << std::endl;
-    }
-
-    if (video::active_av1_mode != 1) {
-      ss << "a=rtpmap:98 AV1/90000"sv << std::endl;
-    }
-
-    if (!session.surround_params.empty()) {
-      // If we have our own surround parameters, advertise them twice first
-      ss << "a=fmtp:97 surround-params="sv << session.surround_params << std::endl;
-      ss << "a=fmtp:97 surround-params="sv << session.surround_params << std::endl;
-    }
-
-    for (int x = 0; x < audio::MAX_STREAM_CONFIG; ++x) {
-      auto &stream_config = audio::stream_configs[x];
-      std::uint8_t mapping[platf::speaker::MAX_SPEAKERS];
-
-      auto mapping_p = stream_config.mapping;
-
-      /**
-       * GFE advertises incorrect mapping for normal quality configurations,
-       * as a result, Moonlight rotates all channels from index '3' to the right
-       * To work around this, rotate channels to the left from index '3'
-       */
-      if (x == audio::SURROUND51 || x == audio::SURROUND71) {
-        std::copy_n(mapping_p, stream_config.channelCount, mapping);
-        std::rotate(mapping + 3, mapping + 4, mapping + audio::MAX_STREAM_CONFIG);
-
-        mapping_p = mapping;
-      }
-
-      ss << "a=fmtp:97 surround-params="sv << stream_config.channelCount << stream_config.streams << stream_config.coupledStreams;
-
-      std::for_each_n(mapping_p, stream_config.channelCount, [&ss](std::uint8_t digit) {
-        ss << (char) (digit + '0');
-      });
-
-      ss << std::endl;
-    }
+    // Note: audio/video advertising removed
 
     respond(sock, session, &option, 200, "OK", req->sequenceNumber, ss.str());
   }
@@ -845,15 +797,11 @@ namespace rtsp_stream {
     std::string_view type {begin, (size_t) std::distance(begin, end)};
 
     std::uint16_t port;
-    /*if (type == "audio"sv) {
-      port = net::map_port(stream::AUDIO_STREAM_PORT);
-    } else if (type == "video"sv) {
-      port = net::map_port(stream::VIDEO_STREAM_PORT);
-    } else*/ if (type == "control"sv) {
+    if (type == "control"sv) {
       port = net::map_port(stream::CONTROL_PORT);
     } else {
+      // only control supported now
       cmd_not_found(sock, session, std::move(req));
-
       return;
     }
 
@@ -872,13 +820,8 @@ namespace rtsp_stream {
 
     // Send identifiers that will be echoed in the other connections
     auto connect_data = std::to_string(session.control_connect_data);
-    if (type == "control"sv) {
-      payload_option.option = const_cast<char *>("X-SS-Connect-Data");
-      payload_option.content = connect_data.data();
-    } else {
-      payload_option.option = const_cast<char *>("X-SS-Ping-Payload");
-      payload_option.content = session.av_ping_payload.data();
-    }
+    payload_option.option = const_cast<char *>("X-SS-Connect-Data");
+    payload_option.content = connect_data.data();
 
     port_option.next = &payload_option;
 
@@ -894,70 +837,7 @@ namespace rtsp_stream {
     auto seqn_str = std::to_string(req->sequenceNumber);
     option.content = const_cast<char *>(seqn_str.c_str());
 
-    std::string_view payload {req->payload, (size_t) req->payloadLength};
-
-    std::vector<std::string_view> lines;
-
-    auto whitespace = [](char ch) {
-      return ch == '\n' || ch == '\r';
-    };
-
-    {
-      auto pos = std::begin(payload);
-      auto begin = pos;
-      while (pos != std::end(payload)) {
-        if (whitespace(*pos++)) {
-          lines.emplace_back(begin, pos - begin - 1);
-
-          while (pos != std::end(payload) && whitespace(*pos)) {
-            ++pos;
-          }
-          begin = pos;
-        }
-      }
-    }
-
-    std::string_view client;
-    std::unordered_map<std::string_view, std::string_view> args;
-
-    for (auto line : lines) {
-      auto type = line.substr(0, 2);
-      if (type == "s="sv) {
-        client = line.substr(2);
-      } else if (type == "a=") {
-        auto pos = line.find(':');
-
-        auto name = line.substr(2, pos - 2);
-        auto val = line.substr(pos + 1);
-
-        if (val[val.size() - 1] == ' ') {
-          val = val.substr(0, val.size() - 1);
-        }
-        args.emplace(name, val);
-      }
-    }
-
-    // Initialize any omitted parameters to defaults
-    args.try_emplace("x-nv-vqos[0].bitStreamFormat"sv, "0"sv);
-    args.try_emplace("x-nv-aqos.packetDuration"sv, "5"sv);
-    args.try_emplace("x-nv-general.useReliableUdp"sv, "1"sv);
-    args.try_emplace("x-nv-vqos[0].fec.minRequiredFecPackets"sv, "0"sv);
-    args.try_emplace("x-nv-general.featureFlags"sv, "135"sv);
-    args.try_emplace("x-ml-general.featureFlags"sv, "0"sv);
-    args.try_emplace("x-nv-vqos[0].qosTrafficType"sv, "5"sv);
-    args.try_emplace("x-nv-aqos.qosTrafficType"sv, "4"sv);
-    args.try_emplace("x-ss-general.encryptionEnabled"sv, "0"sv);
-
-    // NOTE:
-    // Removed logic to translate ANNOUNCE arguments into a stream::config_t and to
-    // allocate/start a stream session. This disables audio/video streaming while
-    // preserving RTSP handshake responses (SETUP/DESCRIBE/PLAY/etc). The server
-    // will simply acknowledge ANNOUNCE and not start any streaming session.
-    //
-    // If you want to fully remove all audio/video code paths (including DESCRIBE
-    // advertising lines), I can remove or adjust those too.
-
-    // Acknowledge the ANNOUNCE but do not start streaming (audio/video removed)
+    // ANNOUNCE parsing preserved but audio/video handling removed.
     respond(sock, session, &option, 200, "OK", req->sequenceNumber, {});
   }
 
