@@ -7,6 +7,12 @@
 #include <fstream>
 #include <future>
 #include <queue>
+#include <memory>
+#include <thread>
+#include <atomic>
+#include <chrono>
+#include <vector>
+#include <cstring>
 
 // lib includes
 #include <boost/endian/arithmetic.hpp>
@@ -33,6 +39,18 @@ extern "C" {
 #include "system_tray.h"
 #include "thread_safe.h"
 #include "utility.h"
+
+#include "video.h"
+#include "audio.h"
+
+// libav (already used by the project)
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavutil/imgutils.h>
+#include <libavutil/opt.h>
+#include <libavutil/pixfmt.h>
+#include <libavutil/error.h>
+}
 
 #define IDX_START_A 0
 #define IDX_START_B 1
@@ -260,6 +278,24 @@ namespace stream {
   static inline void while_starting_do_nothing(std::atomic<session::state_e> &state) {
     while (state.load(std::memory_order_acquire) == session::state_e::STARTING) {
       std::this_thread::sleep_for(1ms);
+    }
+  }
+
+  // small helper: convert libav error code to string
+  static std::string av_err_str(int errnum) {
+    char buf[AV_ERROR_MAX_STRING_SIZE];
+    av_strerror(errnum, buf, sizeof(buf));
+    return std::string(buf);
+  }
+
+  // choose preferred software encoder name by client videoFormat
+  static const char *preferred_software_encoder_name(int videoFormat) {
+    // 0=h264, 1=hevc, 2=av1
+    switch (videoFormat) {
+      case 0: return "libx264";
+      case 1: return "libx265";
+      case 2: return "libaom-av1";
+      default: return "libx264";
     }
   }
 
@@ -1003,6 +1039,7 @@ namespace stream {
 
       if (length < (16 + 4 + 4)) {
         BOOST_LOG(warning) << "Control: Runt packet"sv;
+        session::stop(*session);
         return;
       }
 
@@ -1840,7 +1877,44 @@ namespace stream {
     return -1;
   }
 
-  // (potongan file: hanya fungsi videoThread dan audioThread yang diubah)
+  // Helper: encode and push a single AVFrame (already filled) using libav; returns 0 on success, -1 on fatal error
+  static int encode_and_push_avframe(AVCodecContext *ctx, AVFrame *frame, session_t *session) {
+    int ret = avcodec_send_frame(ctx, frame);
+    if (ret < 0) {
+      BOOST_LOG(error) << "Blackframe: avcodec_send_frame failed: " << av_err_str(ret);
+      return -1;
+    }
+
+    while (ret >= 0) {
+      auto pkt_ptr = std::make_unique<video::packet_raw_avcodec>();
+      AVPacket *out_pkt = pkt_ptr->av_packet;
+
+      ret = avcodec_receive_packet(ctx, out_pkt);
+      if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+        return 0;
+      } else if (ret < 0) {
+        BOOST_LOG(error) << "Blackframe: avcodec_receive_packet failed: " << av_err_str(ret);
+        return -1;
+      }
+
+      pkt_ptr->frame_timestamp = std::chrono::steady_clock::now();
+      pkt_ptr->channel_data = (void *) session;
+      pkt_ptr->replacements = nullptr;
+
+      // Push to central queue
+      try {
+        auto packets = mail::man->queue<video::packet_t>(mail::video_packets);
+        packets->raise(std::move(pkt_ptr));
+      } catch (...) {
+        BOOST_LOG(error) << "Blackframe: failed to push packet to queue";
+        return -1;
+      }
+    }
+
+    return 0;
+  }
+
+  // (potongan file: only functions videoThread and audioThread are replaced below)
   void videoThread(session_t *session) {
     auto fg = util::fail_guard([&]() {
       session::stop(*session);
@@ -1859,9 +1933,128 @@ namespace stream {
     auto address = session->video.peer.address();
     session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
 
-    // Do NOT start capture/encoding — keep control/UDP session prepared but send no video
-    BOOST_LOG(info) << "Video capture disabled by config: peer is bound and QoS set, not starting video capture/broadcast";
-    return;
+    // Robust black-frame implementation (runs in this thread)
+    BOOST_LOG(info) << "Video: starting black-frame encoder (1 FPS lowrate)";
+
+    // Configure encoder: prefer software encoder names, fallback to codec id
+    const char *enc_name = preferred_software_encoder_name(session->config.videoFormat);
+    AVCodec *codec = avcodec_find_encoder_by_name(enc_name);
+    if (!codec) {
+      // fallback to codec id
+      switch (session->config.videoFormat) {
+        case 0: codec = avcodec_find_encoder(AV_CODEC_ID_H264); break;
+        case 1: codec = avcodec_find_encoder(AV_CODEC_ID_HEVC); break;
+        case 2: codec = avcodec_find_encoder(AV_CODEC_ID_AV1); break;
+        default: codec = avcodec_find_encoder(AV_CODEC_ID_H264); break;
+      }
+    }
+
+    if (!codec) {
+      BOOST_LOG(error) << "Blackframe: no suitable encoder found; video thread exiting";
+      return;
+    }
+
+    AVCodecContext *ctx = avcodec_alloc_context3(codec);
+    if (!ctx) {
+      BOOST_LOG(error) << "Blackframe: avcodec_alloc_context3 failed";
+      return;
+    }
+
+    // Use the session config to derive basic parameters
+    ctx->width = session->config.width;
+    ctx->height = session->config.height;
+    // Keep frame timestamping consistent with client framerate, but we'll send frames at 1fps.
+    ctx->time_base = AVRational{1, std::max(1, session->config.framerate)};
+    ctx->framerate = AVRational{std::max(1, session->config.framerate), 1};
+    ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+    ctx->gop_size = 0; // infinite GOP; we'll set keyframes
+    ctx->max_b_frames = 0;
+    ctx->bit_rate = std::max(80000, session->config.bitrate * 1000 / 20); // small bitrate, safe fallback
+
+    // Basic low-latency options
+    AVDictionary *opts = nullptr;
+    av_dict_set(&opts, "preset", "veryfast", 0);
+    av_dict_set(&opts, "tune", "zerolatency", 0);
+    // For x264 ensure frequent keyframes if possible (we'll flag frames as keyframes)
+    av_dict_set(&opts, "x264-params", "keyint=1:scenecut=0", 0);
+
+    if (avcodec_open2(ctx, codec, &opts) < 0) {
+      BOOST_LOG(error) << "Blackframe: avcodec_open2 failed for encoder";
+      av_dict_free(&opts);
+      avcodec_free_context(&ctx);
+      return;
+    }
+    av_dict_free(&opts);
+
+    // Allocate and prepare a single AVFrame (filled with black)
+    AVFrame *frame = av_frame_alloc();
+    if (!frame) {
+      BOOST_LOG(error) << "Blackframe: av_frame_alloc failed";
+      avcodec_free_context(&ctx);
+      return;
+    }
+    frame->format = ctx->pix_fmt;
+    frame->width = ctx->width;
+    frame->height = ctx->height;
+
+    if (av_frame_get_buffer(frame, 0) < 0) {
+      BOOST_LOG(error) << "Blackframe: av_frame_get_buffer failed";
+      av_frame_free(&frame);
+      avcodec_free_context(&ctx);
+      return;
+    }
+
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(56, 22, 100)
+    av_image_fill_black(frame->data, frame->linesize, (AVPixelFormat) frame->format, 0, frame->width, frame->height);
+#else
+    // Fill planes with zero (black)
+    for (int p = 0; p < AV_NUM_DATA_POINTERS; ++p) {
+      if (!frame->data[p]) continue;
+      int plane_h = (p == 0) ? frame->height : frame->height >> 1;
+      int linesize = frame->linesize[p];
+      for (int r = 0; r < plane_h; ++r) {
+        memset(frame->data[p] + r * linesize, 0x00, linesize);
+      }
+    }
+#endif
+
+    int64_t frame_nr = 0;
+    // We'll send frames at 1 FPS (lowrate)
+    const std::chrono::milliseconds send_interval = 1000ms;
+
+    while (!session->shutdown_event->peek()) {
+      // mark as IDR
+      frame->pict_type = AV_PICTURE_TYPE_I;
+      frame->flags |= AV_FRAME_FLAG_KEY;
+      frame->pts = frame_nr++;
+
+      if (encode_and_push_avframe(ctx, frame, session) < 0) {
+        break;
+      }
+
+      // sleep and check shutdown periodically
+      for (int i = 0; i < 10 && !session->shutdown_event->peek(); ++i) {
+        std::this_thread::sleep_for(send_interval / 10);
+      }
+    }
+
+    // flush encoder
+    avcodec_send_frame(ctx, nullptr);
+    while (true) {
+      auto pkt_ptr = std::make_unique<video::packet_raw_avcodec>();
+      int r = avcodec_receive_packet(ctx, pkt_ptr->av_packet);
+      if (r == AVERROR_EOF || r == AVERROR(EAGAIN) || r < 0) break;
+      pkt_ptr->frame_timestamp = std::chrono::steady_clock::now();
+      pkt_ptr->channel_data = (void *) session;
+      pkt_ptr->replacements = nullptr;
+      auto packets = mail::man->queue<video::packet_t>(mail::video_packets);
+      packets->raise(std::move(pkt_ptr));
+    }
+
+    av_frame_free(&frame);
+    avcodec_free_context(&ctx);
+
+    BOOST_LOG(info) << "Video: black-frame encoder exiting";
   }
 
   void audioThread(session_t *session) {
@@ -1882,8 +2075,50 @@ namespace stream {
     auto address = session->audio.peer.address();
     session->audio.qos = platf::enable_socket_qos(ref->audio_sock.native_handle(), address, session->audio.peer.port(), platf::qos_data_type_e::audio, session->config.audioQosType != 0);
 
-    // Do NOT start capture/encoding — keep control/UDP session prepared but send no audio
-    BOOST_LOG(info) << "Audio capture disabled by config: peer is bound and QoS set, not starting audio capture/broadcast";
+    // Only send silence if audio streaming enabled in global config
+    if (!config::audio.stream) {
+      BOOST_LOG(info) << "Audio capture disabled by config: peer is bound and QoS set, not starting audio capture/broadcast";
+      return;
+    }
+
+    BOOST_LOG(info) << "Audio: starting silence generator";
+
+    // Create sample queue used by audio::encodeThread
+    using sample_queue_t = std::shared_ptr<safe::queue_t<std::vector<float>>>;
+    auto samples = std::make_shared<safe::queue_t<std::vector<float>>>(30);
+
+    // Launch opus encode thread (will push into mail::audio_packets)
+    std::thread encode_thread { audio::encodeThread, samples, session->config, (void *) session };
+
+    // compute frame size per channel
+    const int SAMPLE_RATE = 48000; // same as audio.cpp
+    // find stream config as audio::encodeThread would
+    auto stream = audio::stream_configs[audio::map_stream(session->config.channels, session->config.flags[audio::STEREO ? 0 : 0])];
+    // The encodeThread calculates frame_size = config.packetDuration * stream.sampleRate / 1000
+    int frame_samples_per_channel = session->config.audio.packetDuration * stream.sampleRate / 1000;
+    if (frame_samples_per_channel <= 0) frame_samples_per_channel = 960; // fallback
+    int total_samples = frame_samples_per_channel * stream.channelCount;
+
+    // Silence loop at packetDuration cadence
+    std::chrono::milliseconds sleep_ms(session->config.audio.packetDuration);
+    while (!session->shutdown_event->peek()) {
+      std::vector<float> buf;
+      buf.assign(total_samples, 0.0f);
+
+      // push sample buffer
+      samples->raise(std::move(buf));
+
+      // Wait for next packetDuration, check shutdown periodically
+      for (int i = 0; i < 10 && !session->shutdown_event->peek(); ++i) {
+        std::this_thread::sleep_for(sleep_ms / 10);
+      }
+    }
+
+    // signal encoder thread to stop and join
+    samples->stop();
+    if (encode_thread.joinable()) encode_thread.join();
+
+    BOOST_LOG(info) << "Audio: silence generator exiting";
     return;
   }
   namespace session {
