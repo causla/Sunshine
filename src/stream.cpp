@@ -327,15 +327,15 @@ namespace stream {
   struct broadcast_ctx_t {
     message_queue_queue_t message_queue_queue;
 
-    std::thread recv_thread;/*
+    std::thread recv_thread;
     std::thread video_thread;
-    std::thread audio_thread;*/
+    std::thread audio_thread;
     std::thread control_thread;
 
     asio::io_context io_context;
-    /*
+
     udp::socket video_sock {io_context};
-    udp::socket audio_sock {io_context};*/
+    udp::socket audio_sock {io_context};
 
     control_server_t control_server;
   };
@@ -346,9 +346,9 @@ namespace stream {
     safe::mail_t mail;
 
     std::shared_ptr<input::input_t> input;
-    /*
+
     std::thread audioThread;
-    std::thread videoThread;*/
+    std::thread videoThread;
 
     std::chrono::steady_clock::time_point pingTimeout;
 
@@ -401,7 +401,7 @@ namespace stream {
       std::uint32_t seq;
 
       platf::feedback_queue_t feedback_queue;
-      //safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
+      safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
     } control;
 
     std::uint32_t launch_session_id;
@@ -890,7 +890,7 @@ namespace stream {
     return 0;
   }
 
-  int send_hdr_mode(session_t *session) {
+  int send_hdr_mode(session_t *session, video::hdr_info_t hdr_info) {
     if (!session->control.peer) {
       BOOST_LOG(warning) << "Couldn't send HDR mode, still waiting for PING from Moonlight"sv;
       // Still waiting for PING from Moonlight
@@ -947,7 +947,7 @@ namespace stream {
         << "last good frame [" << lastGoodFrame << ']' << std::endl
         << "---end stats---";
     });
-/*
+
     server->map(packetTypes[IDX_REQUEST_IDR_FRAME], [&](session_t *session, const std::string_view &payload) {
       BOOST_LOG(debug) << "type [IDX_REQUEST_IDR_FRAME]"sv;
 
@@ -966,7 +966,7 @@ namespace stream {
 
       session->video.invalidate_ref_frames_events->raise(std::make_pair(firstFrame, lastFrame));
     });
-*/
+
     server->map(packetTypes[IDX_INPUT_DATA], [&](session_t *session, const std::string_view &payload) {
       BOOST_LOG(debug) << "type [IDX_INPUT_DATA]"sv;
 
@@ -1173,11 +1173,11 @@ namespace stream {
   }
 
   void recvThread(broadcast_ctx_t &ctx) {
-/*  std::map<av_session_id_t, message_queue_t> peer_to_video_session;
+    std::map<av_session_id_t, message_queue_t> peer_to_video_session;
     std::map<av_session_id_t, message_queue_t> peer_to_audio_session;
 
     auto &video_sock = ctx.video_sock;
-    auto &audio_sock = ctx.audio_sock;*/
+    auto &audio_sock = ctx.audio_sock;
 
     auto &message_queue_queue = ctx.message_queue_queue;
     auto broadcast_shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
@@ -1194,7 +1194,7 @@ namespace stream {
         auto message_queue_opt = message_queue_queue->pop();
         TUPLE_3D_REF(socket_type, session_id, message_queue, *message_queue_opt);
 
-       /* switch (socket_type) {
+        switch (socket_type) {
           case socket_e::video:
             if (message_queue) {
               peer_to_video_session.emplace(session_id, message_queue);
@@ -1209,7 +1209,7 @@ namespace stream {
               peer_to_audio_session.erase(session_id);
             }
             break;
-        }*/
+        }
       }
     };
 
@@ -1254,18 +1254,18 @@ namespace stream {
       };
     };
 
-    /*recv_func_init(video_sock, 0, peer_to_video_session);
+    recv_func_init(video_sock, 0, peer_to_video_session);
     recv_func_init(audio_sock, 1, peer_to_audio_session);
 
     video_sock.async_receive_from(asio::buffer(buf[0]), peer, 0, recv_func[0]);
-    audio_sock.async_receive_from(asio::buffer(buf[1]), peer, 0, recv_func[1]);*/
+    audio_sock.async_receive_from(asio::buffer(buf[1]), peer, 0, recv_func[1]);
 
     while (!broadcast_shutdown_event->peek()) {
       io.run();
     }
   }
 
-  /*void videoBroadcastThread(udp::socket &sock) {
+  void videoBroadcastThread(udp::socket &sock) {
     auto shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
     auto packets = mail::man->queue<video::packet_t>(mail::video_packets);
     auto video_epoch = std::chrono::steady_clock::now();
@@ -1587,9 +1587,9 @@ namespace stream {
     }
 
     shutdown_event->raise(true);
-  }*/
+  }
 
-  /*void audioBroadcastThread(udp::socket &sock) {
+  void audioBroadcastThread(udp::socket &sock) {
     auto shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
     auto packets = mail::man->queue<audio::packet_t>(mail::audio_packets);
 
@@ -1691,14 +1691,14 @@ namespace stream {
     }
 
     shutdown_event->raise(true);
-  }*/
+  }
 
   int start_broadcast(broadcast_ctx_t &ctx) {
     auto address_family = net::af_from_enum_string(config::sunshine.address_family);
     auto protocol = address_family == net::IPV4 ? udp::v4() : udp::v6();
     auto control_port = net::map_port(CONTROL_PORT);
-    //auto video_port = net::map_port(VIDEO_STREAM_PORT);
-    //auto audio_port = net::map_port(AUDIO_STREAM_PORT);
+    auto video_port = net::map_port(VIDEO_STREAM_PORT);
+    auto audio_port = net::map_port(AUDIO_STREAM_PORT);
 
     if (ctx.control_server.bind(address_family, control_port)) {
       BOOST_LOG(error) << "Couldn't bind Control server to port ["sv << control_port << "], likely another process already bound to the port"sv;
@@ -1707,7 +1707,7 @@ namespace stream {
     }
 
     boost::system::error_code ec;
-    /*ctx.video_sock.open(protocol, ec);
+    ctx.video_sock.open(protocol, ec);
     if (ec) {
       BOOST_LOG(fatal) << "Couldn't open socket for Video server: "sv << ec.message();
 
@@ -1740,12 +1740,12 @@ namespace stream {
       BOOST_LOG(fatal) << "Couldn't bind Audio server to port ["sv << audio_port << "]: "sv << ec.message();
 
       return -1;
-    }*/
+    }
 
     ctx.message_queue_queue = std::make_shared<message_queue_queue_t::element_type>(30);
 
-//    ctx.video_thread = std::thread {videoBroadcastThread, std::ref(ctx.video_sock)};
-//    ctx.audio_thread = std::thread {audioBroadcastThread, std::ref(ctx.audio_sock)};
+    ctx.video_thread = std::thread {videoBroadcastThread, std::ref(ctx.video_sock)};
+    ctx.audio_thread = std::thread {audioBroadcastThread, std::ref(ctx.audio_sock)};
     ctx.control_thread = std::thread {controlBroadcastThread, &ctx.control_server};
 
     ctx.recv_thread = std::thread {recvThread, std::ref(ctx)};
@@ -1758,28 +1758,28 @@ namespace stream {
 
     broadcast_shutdown_event->raise(true);
 
-    //auto video_packets = mail::man->queue<video::packet_t>(mail::video_packets);
-    //auto audio_packets = mail::man->queue<audio::packet_t>(mail::audio_packets);
+    auto video_packets = mail::man->queue<video::packet_t>(mail::video_packets);
+    auto audio_packets = mail::man->queue<audio::packet_t>(mail::audio_packets);
 
     // Minimize delay stopping video/audio threads
-    //video_packets->stop();
-    //audio_packets->stop();
+    video_packets->stop();
+    audio_packets->stop();
 
     ctx.message_queue_queue->stop();
     ctx.io_context.stop();
 
-    //ctx.video_sock.close();
-    //ctx.audio_sock.close();
+    ctx.video_sock.close();
+    ctx.audio_sock.close();
 
-    //video_packets.reset();
-    //audio_packets.reset();
+    video_packets.reset();
+    audio_packets.reset();
 
     BOOST_LOG(debug) << "Waiting for main listening thread to end..."sv;
     ctx.recv_thread.join();
-    /*BOOST_LOG(debug) << "Waiting for main video thread to end..."sv;
+    BOOST_LOG(debug) << "Waiting for main video thread to end..."sv;
     ctx.video_thread.join();
     BOOST_LOG(debug) << "Waiting for main audio thread to end..."sv;
-    ctx.audio_thread.join();*/
+    ctx.audio_thread.join();
     BOOST_LOG(debug) << "Waiting for main control thread to end..."sv;
     ctx.control_thread.join();
     BOOST_LOG(debug) << "All broadcasting threads ended"sv;
@@ -1840,25 +1840,31 @@ namespace stream {
     return -1;
   }
 
-  /*void videoThread(session_t *session) {
+  void videoThread(session_t *session) {
     auto fg = util::fail_guard([&]() {
       session::stop(*session);
     });
 
     while_starting_do_nothing(session->state);
 
-    auto ref = broadcast.ref();
-    auto error = recv_ping(session, ref, socket_e::video, session->video.ping_payload, session->video.peer, config::stream.ping_timeout);
-    if (error < 0) {
-      return;
-    }
+    // Early return: disable sending video. This keeps the control stream active only.
+    BOOST_LOG(info) << "Video disabled (control-only mode): not starting video capture/broadcast";
+    return;
 
-    // Enable local prioritization and QoS tagging on video traffic if requested by the client
-    auto address = session->video.peer.address();
-    session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
-
-    BOOST_LOG(debug) << "Start capturing Video"sv;
-    video::capture(session->mail, session->config.monitor, session);
+    // The original code would wait for a ping and then start video capture.
+    // Kept above are the original steps, but returning early prevents any video frames from being sent.
+    // auto ref = broadcast.ref();
+    // auto error = recv_ping(session, ref, socket_e::video, session->video.ping_payload, session->video.peer, config::stream.ping_timeout);
+    // if (error < 0) {
+    //   return;
+    // }
+    //
+    // // Enable local prioritization and QoS tagging on video traffic if requested by the client
+    // auto address = session->video.peer.address();
+    // session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
+    //
+    // BOOST_LOG(debug) << "Start capturing Video"sv;
+    // video::capture(session->mail, session->config.monitor, session);
   }
 
   void audioThread(session_t *session) {
@@ -1868,19 +1874,25 @@ namespace stream {
 
     while_starting_do_nothing(session->state);
 
-    auto ref = broadcast.ref();
-    auto error = recv_ping(session, ref, socket_e::audio, session->audio.ping_payload, session->audio.peer, config::stream.ping_timeout);
-    if (error < 0) {
-      return;
-    }
+    // Early return: disable sending audio. This keeps the control stream active only.
+    BOOST_LOG(info) << "Audio disabled (control-only mode): not starting audio capture/broadcast";
+    return;
 
-    // Enable local prioritization and QoS tagging on audio traffic if requested by the client
-    auto address = session->audio.peer.address();
-    session->audio.qos = platf::enable_socket_qos(ref->audio_sock.native_handle(), address, session->audio.peer.port(), platf::qos_data_type_e::audio, session->config.audioQosType != 0);
-
-    BOOST_LOG(debug) << "Start capturing Audio"sv;
-    audio::capture(session->mail, session->config.audio, session);
-  }*/
+    // The original code would wait for a ping and then start audio capture.
+    // Kept below are the original steps for reference, but returning early prevents any audio from being sent.
+    // auto ref = broadcast.ref();
+    // auto error = recv_ping(session, ref, socket_e::audio, session->audio.ping_payload, session->audio.peer, config::stream.ping_timeout);
+    // if (error < 0) {
+    //   return;
+    // }
+    //
+    // // Enable local prioritization and QoS tagging on audio traffic if requested by the client
+    // auto address = session->audio.peer.address();
+    // session->audio.qos = platf::enable_socket_qos(ref->audio_sock.native_handle(), address, session->audio.peer.port(), platf::qos_data_type_e::audio, session->config.audioQosType != 0);
+    //
+    // BOOST_LOG(debug) << "Start capturing Audio"sv;
+    // audio::capture(session->mail, session->config.audio, session);
+  }
 
   namespace session {
     std::atomic_uint running_sessions;
@@ -1914,11 +1926,11 @@ namespace stream {
         // Cancel the kill task if we manage to return from this function
         task_pool.cancel(force_kill);
       });
-/*
+
       BOOST_LOG(debug) << "Waiting for video to end..."sv;
       session.videoThread.join();
       BOOST_LOG(debug) << "Waiting for audio to end..."sv;
-      session.audioThread.join();*/
+      session.audioThread.join();
       BOOST_LOG(debug) << "Waiting for control to end..."sv;
       session.controlEnd.view();
       // Reset input on session stop to avoid stuck repeated keys
@@ -1965,17 +1977,16 @@ namespace stream {
       }
 
       auto addr = boost::asio::ip::make_address(addr_string);
-      /*
       session.video.peer.address(addr);
       session.video.peer.port(0);
 
       session.audio.peer.address(addr);
-      session.audio.peer.port(0);*/
+      session.audio.peer.port(0);
 
       session.pingTimeout = std::chrono::steady_clock::now() + config::stream.ping_timeout;
-      /*
+
       session.audioThread = std::thread {audioThread, &session};
-      session.videoThread = std::thread {videoThread, &session};*/
+      session.videoThread = std::thread {videoThread, &session};
 
       session.state.store(state_e::RUNNING, std::memory_order_relaxed);
 
@@ -2002,14 +2013,14 @@ namespace stream {
 
       session->control.connect_data = launch_session.control_connect_data;
       session->control.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);
-      //session->control.hdr_queue = mail->event<video::hdr_info_t>(mail::hdr);
+      session->control.hdr_queue = mail->event<video::hdr_info_t>(mail::hdr);
       session->control.legacy_input_enc_iv = launch_session.iv;
       session->control.cipher = crypto::cipher::gcm_t {
         launch_session.gcm_key,
         false
       };
 
-      /*session->video.idr_events = mail->event<bool>(mail::idr);
+      session->video.idr_events = mail->event<bool>(mail::idr);
       session->video.invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
       session->video.lowseq = 0;
       session->video.ping_payload = launch_session.av_ping_payload;
@@ -2020,7 +2031,7 @@ namespace stream {
           false
         };
         session->video.gcm_iv_counter = 0;
-      }*/
+      }
 
       constexpr auto max_block_size = crypto::cipher::round_to_pkcs7_padded(2048);
 
@@ -2033,7 +2044,6 @@ namespace stream {
 
       // Audio FEC spans multiple audio packets,
       // therefore its session specific
-      /*
       session->audio.shards = std::move(shards);
       session->audio.shards_p = std::move(shards_p);
 
@@ -2054,7 +2064,6 @@ namespace stream {
       session->audio.avRiKeyId = util::endian::big(*(std::uint32_t *) launch_session.iv.data());
       session->audio.sequenceNumber = 0;
       session->audio.timestamp = 0;
-      */
 
       session->control.peer = nullptr;
       session->state.store(state_e::STOPPED, std::memory_order_relaxed);
