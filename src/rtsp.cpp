@@ -110,7 +110,7 @@ namespace rtsp_stream {
 
       if (session->rtsp_cipher) {
         // For encrypted RTSP, we will read the the entire header first
-        boost::asio::async_read(sock, boost::asio::buffer(begin, sizeof(encrypted_rtsp_header_t)), boost::bind(&socket_t::handle_read_encrypted_header, shared_from_this(), boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
+        boost::asio::async_read(sock, boost::asio::buffer(begin, sizeof(encrypted_rtsp_header_t)), boost::bind(&socket_t::handle_read_encrypted_header, shared_from_this(), boost::asio::placeholders::e[...]
       } else {
         sock.async_read_some(
           boost::asio::buffer(begin, (std::size_t) (std::end(msg_buf) - begin)),
@@ -170,7 +170,7 @@ namespace rtsp_stream {
       sock_close.disable();
 
       // Read the remainder of the header and full encrypted payload
-      boost::asio::async_read(socket->sock, boost::asio::buffer(socket->begin + bytes, payload_length), boost::bind(&socket_t::handle_read_encrypted_message, socket->shared_from_this(), boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
+      boost::asio::async_read(socket->sock, boost::asio::buffer(socket->begin + bytes, payload_length), boost::bind(&socket_t::handle_read_encrypted_message, socket->shared_from_this(), boost::asio::p[...]
     }
 
     /**
@@ -938,9 +938,7 @@ namespace rtsp_stream {
     }
 
     // Initialize any omitted parameters to defaults
-    //args.try_emplace("x-nv-video[0].encoderCscMode"sv, "0"sv);
     args.try_emplace("x-nv-vqos[0].bitStreamFormat"sv, "0"sv);
-    //args.try_emplace("x-nv-video[0].dynamicRangeMode"sv, "0"sv);
     args.try_emplace("x-nv-aqos.packetDuration"sv, "5"sv);
     args.try_emplace("x-nv-general.useReliableUdp"sv, "1"sv);
     args.try_emplace("x-nv-vqos[0].fec.minRequiredFecPackets"sv, "0"sv);
@@ -948,156 +946,18 @@ namespace rtsp_stream {
     args.try_emplace("x-ml-general.featureFlags"sv, "0"sv);
     args.try_emplace("x-nv-vqos[0].qosTrafficType"sv, "5"sv);
     args.try_emplace("x-nv-aqos.qosTrafficType"sv, "4"sv);
-    //args.try_emplace("x-ml-video.configuredBitrateKbps"sv, "0"sv);
     args.try_emplace("x-ss-general.encryptionEnabled"sv, "0"sv);
-    //args.try_emplace("x-ss-video[0].chromaSamplingType"sv, "0"sv);
-    //args.try_emplace("x-ss-video[0].intraRefresh"sv, "0"sv);
-    //args.try_emplace("x-nv-video[0].clientRefreshRateX100"sv, "0"sv);
 
-    stream::config_t config;
+    // NOTE:
+    // Removed logic to translate ANNOUNCE arguments into a stream::config_t and to
+    // allocate/start a stream session. This disables audio/video streaming while
+    // preserving RTSP handshake responses (SETUP/DESCRIBE/PLAY/etc). The server
+    // will simply acknowledge ANNOUNCE and not start any streaming session.
+    //
+    // If you want to fully remove all audio/video code paths (including DESCRIBE
+    // advertising lines), I can remove or adjust those too.
 
-    std::int64_t configuredBitrateKbps;
-    /*config.audio.flags[audio::config_t::HOST_AUDIO] = session.host_audio;
-    try {
-      config.audio.channels = util::from_view(args.at("x-nv-audio.surround.numChannels"sv));
-      config.audio.mask = util::from_view(args.at("x-nv-audio.surround.channelMask"sv));
-      config.audio.packetDuration = util::from_view(args.at("x-nv-aqos.packetDuration"sv));
-
-      config.audio.flags[audio::config_t::HIGH_QUALITY] =
-        util::from_view(args.at("x-nv-audio.surround.AudioQuality"sv));
-
-      config.controlProtocolType = util::from_view(args.at("x-nv-general.useReliableUdp"sv));
-      config.packetsize = util::from_view(args.at("x-nv-video[0].packetSize"sv));
-      config.minRequiredFecPackets = util::from_view(args.at("x-nv-vqos[0].fec.minRequiredFecPackets"sv));
-      config.mlFeatureFlags = util::from_view(args.at("x-ml-general.featureFlags"sv));
-      config.audioQosType = util::from_view(args.at("x-nv-aqos.qosTrafficType"sv));
-      config.videoQosType = util::from_view(args.at("x-nv-vqos[0].qosTrafficType"sv));
-      config.encryptionFlagsEnabled = util::from_view(args.at("x-ss-general.encryptionEnabled"sv));
-
-      // Legacy clients use nvFeatureFlags to indicate support for audio encryption
-      if (util::from_view(args.at("x-nv-general.featureFlags"sv)) & 0x20) {
-        config.encryptionFlagsEnabled |= SS_ENC_AUDIO;
-      }
-
-      config.monitor.height = util::from_view(args.at("x-nv-video[0].clientViewportHt"sv));
-      config.monitor.width = util::from_view(args.at("x-nv-video[0].clientViewportWd"sv));
-      config.monitor.framerate = util::from_view(args.at("x-nv-video[0].maxFPS"sv));
-      config.monitor.framerateX100 = util::from_view(args.at("x-nv-video[0].clientRefreshRateX100"sv));
-      config.monitor.bitrate = util::from_view(args.at("x-nv-vqos[0].bw.maximumBitrateKbps"sv));
-      config.monitor.slicesPerFrame = util::from_view(args.at("x-nv-video[0].videoEncoderSlicesPerFrame"sv));
-      config.monitor.numRefFrames = util::from_view(args.at("x-nv-video[0].maxNumReferenceFrames"sv));
-      config.monitor.encoderCscMode = util::from_view(args.at("x-nv-video[0].encoderCscMode"sv));
-      config.monitor.videoFormat = util::from_view(args.at("x-nv-vqos[0].bitStreamFormat"sv));
-      config.monitor.dynamicRange = util::from_view(args.at("x-nv-video[0].dynamicRangeMode"sv));
-      config.monitor.chromaSamplingType = util::from_view(args.at("x-ss-video[0].chromaSamplingType"sv));
-      config.monitor.enableIntraRefresh = util::from_view(args.at("x-ss-video[0].intraRefresh"sv));
-
-      configuredBitrateKbps = util::from_view(args.at("x-ml-video.configuredBitrateKbps"sv));
-    } catch (std::out_of_range &) {
-      respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
-      return;
-    }*/
-
-    // When using stereo audio, the audio quality is (strangely) indicated by whether the Host field
-    // in the RTSP message matches a local interface's IP address. Fortunately, Moonlight always sends
-    // 0.0.0.0 when it wants low quality, so it is easy to check without enumerating interfaces.
-    /*if (config.audio.channels == 2) {
-      for (auto option = req->options; option != nullptr; option = option->next) {
-        if ("Host"sv == option->option) {
-          std::string_view content {option->content};
-          BOOST_LOG(debug) << "Found Host: "sv << content;
-          config.audio.flags[audio::config_t::HIGH_QUALITY] = (content.find("0.0.0.0"sv) == std::string::npos);
-        }
-      }
-    } else if (session.surround_params.length() > 3) {
-      // Channels
-      std::uint8_t c = session.surround_params[0] - '0';
-      // Streams
-      std::uint8_t n = session.surround_params[1] - '0';
-      // Coupled streams
-      std::uint8_t m = session.surround_params[2] - '0';
-      auto valid = false;
-      if ((c == 6 || c == 8) && c == config.audio.channels && n + m == c && session.surround_params.length() == c + 3) {
-        config.audio.customStreamParams.channelCount = c;
-        config.audio.customStreamParams.streams = n;
-        config.audio.customStreamParams.coupledStreams = m;
-        valid = true;
-        for (std::uint8_t i = 0; i < c; i++) {
-          config.audio.customStreamParams.mapping[i] = session.surround_params[i + 3] - '0';
-          if (config.audio.customStreamParams.mapping[i] >= c) {
-            valid = false;
-            break;
-          }
-        }
-      }
-      config.audio.flags[audio::config_t::CUSTOM_SURROUND_PARAMS] = valid;
-    }
-    if (session.continuous_audio) {
-      BOOST_LOG(info) << "Client requested continuous audio"sv;
-      config.audio.flags[audio::config_t::CONTINUOUS_AUDIO] = true;
-    }
-
-    // If the client sent a configured bitrate, we will choose the actual bitrate ourselves
-    // by using FEC percentage and audio quality settings. If the calculated bitrate ends up
-    // too low, we'll allow it to exceed the limits rather than reducing the encoding bitrate
-    // down to nearly nothing.
-    if (configuredBitrateKbps) {
-      BOOST_LOG(debug) << "Client configured bitrate is "sv << configuredBitrateKbps << " Kbps"sv;
-
-      // If the FEC percentage isn't too high, adjust the configured bitrate to ensure video
-      // traffic doesn't exceed the user's selected bitrate when the FEC shards are included.
-      if (config::stream.fec_percentage <= 80) {
-        configuredBitrateKbps /= 100.f / (100 - config::stream.fec_percentage);
-      }
-
-      // Adjust the bitrate to account for audio traffic bandwidth usage (capped at 20% reduction).
-      // The bitrate per channel is 256 Kbps for high quality mode and 96 Kbps for normal quality.
-      auto audioBitrateAdjustment = (config.audio.flags[audio::config_t::HIGH_QUALITY] ? 256 : 96) * config.audio.channels;
-      configuredBitrateKbps -= std::min((std::int64_t) audioBitrateAdjustment, configuredBitrateKbps / 5);
-
-      // Reduce it by another 500Kbps to account for A/V packet overhead and control data
-      // traffic (capped at 10% reduction).
-      configuredBitrateKbps -= std::min((std::int64_t) 500, configuredBitrateKbps / 10);
-
-      BOOST_LOG(debug) << "Final adjusted video encoding bitrate is "sv << configuredBitrateKbps << " Kbps"sv;
-      config.monitor.bitrate = configuredBitrateKbps;
-    }
-
-    if (config.monitor.videoFormat == 1 && video::active_hevc_mode == 1) {
-      BOOST_LOG(warning) << "HEVC is disabled, yet the client requested HEVC"sv;
-
-      respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
-      return;
-    }
-
-    if (config.monitor.videoFormat == 2 && video::active_av1_mode == 1) {
-      BOOST_LOG(warning) << "AV1 is disabled, yet the client requested AV1"sv;
-
-      respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
-      return;
-    }*/
-
-    // Check that any required encryption is enabled
-    auto encryption_mode = net::encryption_mode_for_address(sock.remote_endpoint().address());
-    if (encryption_mode == config::ENCRYPTION_MODE_MANDATORY &&
-        (config.encryptionFlagsEnabled) {
-      BOOST_LOG(error) << "Rejecting client that cannot comply with mandatory encryption requirement"sv;
-
-      respond(sock, session, &option, 403, "Forbidden", req->sequenceNumber, {});
-      return;
-    }
-
-    auto stream_session = stream::session::alloc(config, session);
-    server->insert(stream_session);
-
-    if (stream::session::start(*stream_session, sock.remote_endpoint().address().to_string())) {
-      BOOST_LOG(error) << "Failed to start a streaming session"sv;
-
-      server->remove(stream_session);
-      respond(sock, session, &option, 500, "Internal Server Error", req->sequenceNumber, {});
-      return;
-    }
-
+    // Acknowledge the ANNOUNCE but do not start streaming (audio/video removed)
     respond(sock, session, &option, 200, "OK", req->sequenceNumber, {});
   }
 
