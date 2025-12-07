@@ -845,11 +845,11 @@ namespace rtsp_stream {
     std::string_view type {begin, (size_t) std::distance(begin, end)};
 
     std::uint16_t port;
-    if (type == "audio"sv) {
+    /*if (type == "audio"sv) {
       port = net::map_port(stream::AUDIO_STREAM_PORT);
     } else if (type == "video"sv) {
       port = net::map_port(stream::VIDEO_STREAM_PORT);
-    } else if (type == "control"sv) {
+    } else*/ if (type == "control"sv) {
       port = net::map_port(stream::CONTROL_PORT);
     } else {
       cmd_not_found(sock, session, std::move(req));
@@ -938,9 +938,9 @@ namespace rtsp_stream {
     }
 
     // Initialize any omitted parameters to defaults
-    args.try_emplace("x-nv-video[0].encoderCscMode"sv, "0"sv);
+    //args.try_emplace("x-nv-video[0].encoderCscMode"sv, "0"sv);
     args.try_emplace("x-nv-vqos[0].bitStreamFormat"sv, "0"sv);
-    args.try_emplace("x-nv-video[0].dynamicRangeMode"sv, "0"sv);
+    //args.try_emplace("x-nv-video[0].dynamicRangeMode"sv, "0"sv);
     args.try_emplace("x-nv-aqos.packetDuration"sv, "5"sv);
     args.try_emplace("x-nv-general.useReliableUdp"sv, "1"sv);
     args.try_emplace("x-nv-vqos[0].fec.minRequiredFecPackets"sv, "0"sv);
@@ -948,16 +948,16 @@ namespace rtsp_stream {
     args.try_emplace("x-ml-general.featureFlags"sv, "0"sv);
     args.try_emplace("x-nv-vqos[0].qosTrafficType"sv, "5"sv);
     args.try_emplace("x-nv-aqos.qosTrafficType"sv, "4"sv);
-    args.try_emplace("x-ml-video.configuredBitrateKbps"sv, "0"sv);
+    //args.try_emplace("x-ml-video.configuredBitrateKbps"sv, "0"sv);
     args.try_emplace("x-ss-general.encryptionEnabled"sv, "0"sv);
-    args.try_emplace("x-ss-video[0].chromaSamplingType"sv, "0"sv);
-    args.try_emplace("x-ss-video[0].intraRefresh"sv, "0"sv);
-    args.try_emplace("x-nv-video[0].clientRefreshRateX100"sv, "0"sv);
+    //args.try_emplace("x-ss-video[0].chromaSamplingType"sv, "0"sv);
+    //args.try_emplace("x-ss-video[0].intraRefresh"sv, "0"sv);
+    //args.try_emplace("x-nv-video[0].clientRefreshRateX100"sv, "0"sv);
 
     stream::config_t config;
 
     std::int64_t configuredBitrateKbps;
-    config.audio.flags[audio::config_t::HOST_AUDIO] = session.host_audio;
+    /*config.audio.flags[audio::config_t::HOST_AUDIO] = session.host_audio;
     try {
       config.audio.channels = util::from_view(args.at("x-nv-audio.surround.numChannels"sv));
       config.audio.mask = util::from_view(args.at("x-nv-audio.surround.channelMask"sv));
@@ -996,12 +996,12 @@ namespace rtsp_stream {
     } catch (std::out_of_range &) {
       respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
       return;
-    }
+    }*/
 
     // When using stereo audio, the audio quality is (strangely) indicated by whether the Host field
     // in the RTSP message matches a local interface's IP address. Fortunately, Moonlight always sends
     // 0.0.0.0 when it wants low quality, so it is easy to check without enumerating interfaces.
-    if (config.audio.channels == 2) {
+    /*if (config.audio.channels == 2) {
       for (auto option = req->options; option != nullptr; option = option->next) {
         if ("Host"sv == option->option) {
           std::string_view content {option->content};
@@ -1075,12 +1075,12 @@ namespace rtsp_stream {
 
       respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
       return;
-    }
+    }*/
 
     // Check that any required encryption is enabled
     auto encryption_mode = net::encryption_mode_for_address(sock.remote_endpoint().address());
     if (encryption_mode == config::ENCRYPTION_MODE_MANDATORY &&
-        (config.encryptionFlagsEnabled & (SS_ENC_VIDEO | SS_ENC_AUDIO)) != (SS_ENC_VIDEO | SS_ENC_AUDIO)) {
+        (config.encryptionFlagsEnabled) {
       BOOST_LOG(error) << "Rejecting client that cannot comply with mandatory encryption requirement"sv;
 
       respond(sock, session, &option, 403, "Forbidden", req->sequenceNumber, {});
