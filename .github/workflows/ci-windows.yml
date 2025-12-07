@@ -4,7 +4,8 @@ permissions:
   contents: read
 
 on:
-  workflow_call:
+  workflow_dispatch:   # allows manual trigger
+  workflow_call:       # still allows other workflows to call it
     inputs:
       release_commit:
         required: true
